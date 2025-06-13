@@ -12,35 +12,63 @@ provider "azurerm" {
   skip_provider_registration = true
 }
 
-# Resource Group to contain all resources
+# Retrieve subscription and tenant details for tagging
 data "azurerm_client_config" "current" {}
 
+# Resource Group to contain all resources
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = var.location
-  tags = merge(var.common_tags, { "Owner" = data.azurerm_client_config.current.object_id })
+  tags     = var.common_tags
 }
 
 # Storage Account for function and general use
 resource "azurerm_storage_account" "sa" {
-  name                     = var.storage_account_name
-  resource_group_name      = azurerm_resource_group.rg.name
-  location                 = azurerm_resource_group.rg.location
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
-  enable_https_traffic_only = true
+  name                        = var.storage_account_name
+  resource_group_name         = azurerm_resource_group.rg.name
+  location                    = azurerm_resource_group.rg.location
+  account_tier                = "Standard"
+  account_replication_type    = "LRS"
+  enable_https_traffic_only   = true
+
+  # Enable access time tracking
+  blob_properties {
+    last_access_time_enabled = true
+  }
 
   tags = var.common_tags
 }
 
-# App Service Plan (Linux Consumption Plan not supported for functions) — using Premium for demonstration
+# Lifecycle management policy for Storage Account
+resource "azurerm_storage_management_policy" "sa_policy" {
+  storage_account_id = azurerm_storage_account.sa.id
+
+  rule {
+    name    = "default-lifecycle-policy"
+    enabled = true
+
+    filters {
+      blob_types   = ["blockBlob"]
+      prefix_match = [""]
+    }
+
+    actions {
+      base_blob {
+        tier_to_cool_after_days_since_modification_greater_than = 30
+        delete_after_days_since_modification_greater_than      = 365
+      }
+    }
+  }
+}
+
+# App Service Plan (Linux Premium) for Function Apps
 resource "azurerm_service_plan" "asp" {
   name                = var.service_plan_name
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
-  sku_name   = var.app_service_sku_name
-  os_type    = "Linux"
+  sku_name     = var.app_service_sku_name
+  os_type      = "Linux"
   worker_count = var.worker_count
 
   tags = var.common_tags
@@ -55,7 +83,7 @@ resource "azurerm_linux_virtual_machine" "vm" {
   admin_password        = var.vm_admin_password
   size                  = var.vm_size
 
-  network_interface_ids = [ var.network_interface_id ]
+  network_interface_ids = [var.network_interface_id]
 
   os_disk {
     caching              = "ReadWrite"
@@ -82,17 +110,21 @@ resource "azurerm_linux_function_app" "func" {
   storage_account_access_key = azurerm_storage_account.sa.primary_access_key
 
   site_config {
-    # Customize as needed, e.g.:
-    # linux_fx_version = "Python|3.9"
+    # e.g., linux_fx_version = "Python|3.9"
   }
 
   tags = var.common_tags
 }
 
-# Outputs to track created resources
+# Outputs for tracking created resources
 output "resource_group_name" {
   description = "Name of the resource group"
   value       = azurerm_resource_group.rg.name
+}
+
+output "storage_account_id" {
+  description = "ID of the Storage Account"
+  value       = azurerm_storage_account.sa.id
 }
 
 output "vm_id" {
@@ -105,7 +137,7 @@ output "service_plan_id" {
   value       = azurerm_service_plan.asp.id
 }
 
-output "function_app_default_hostname" {
+output "function_app_hostname" {
   description = "Function App default hostname"
   value       = azurerm_linux_function_app.func.default_hostname
 }
